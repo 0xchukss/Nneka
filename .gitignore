@@ -26,3 +26,6 @@ env/
 *.aac
 *.flac
 *.ogg
+
+.vercel
+.env*
