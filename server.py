@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parent
 VENDOR = ROOT / "_vendor"
 if VENDOR.exists():
     sys.path.insert(0, str(VENDOR))
+IS_VERCEL = bool(os.environ.get("VERCEL"))
+RUNTIME_DIR = Path(os.environ.get("TMPDIR") or "/tmp") / "nneka" if IS_VERCEL else ROOT
 
 try:
     from flask import Flask, jsonify, redirect, render_template_string, request, send_file, url_for
@@ -29,13 +31,15 @@ except Exception as exc:
     )
 
 
-JOBS_DIR = ROOT / "server_jobs"
-DOWNLOADS = Path.home() / "Downloads"
+JOBS_DIR = RUNTIME_DIR / "server_jobs"
+DOWNLOADS = RUNTIME_DIR / "downloads" if IS_VERCEL else Path.home() / "Downloads"
 ALLOWED_VIDEO = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 ALLOWED_AUDIO = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024 * 1024
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+DOWNLOADS.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -146,7 +150,10 @@ def run_job(job_id: str, video_dir: Path, audio_path: Path | None, args: dict[st
 
     if exit_code == 0 and output_path.exists():
         set_job(job_id, status="done", output_path=str(output_path))
-        add_log(job_id, "Done. File is in your Downloads folder.")
+        if IS_VERCEL:
+            add_log(job_id, "Done. Use the download button before the cloud function instance expires.")
+        else:
+            add_log(job_id, "Done. File is in your Downloads folder.")
     else:
         set_job(job_id, status="error", error=f"Render failed with exit code {exit_code}.")
         add_log(job_id, f"Render failed with exit code {exit_code}.")
@@ -494,12 +501,15 @@ def api_run():
         "fps": request.form.get("fps", "30"),
         "seed": request.form.get("seed", ""),
     }
-    thread = threading.Thread(
-        target=run_job,
-        args=(job_id, video_dir, audio_files[0] if audio_files else None, args),
-        daemon=True,
-    )
-    thread.start()
+    if IS_VERCEL:
+        run_job(job_id, video_dir, audio_files[0] if audio_files else None, args)
+    else:
+        thread = threading.Thread(
+            target=run_job,
+            args=(job_id, video_dir, audio_files[0] if audio_files else None, args),
+            daemon=True,
+        )
+        thread.start()
     return jsonify({"job_id": job_id})
 
 
@@ -531,6 +541,4 @@ def download(job_id: str):
 
 
 if __name__ == "__main__":
-    JOBS_DIR.mkdir(parents=True, exist_ok=True)
-    DOWNLOADS.mkdir(parents=True, exist_ok=True)
     app.run(host="127.0.0.1", port=8765, debug=False, threaded=True)
