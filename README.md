@@ -19,7 +19,7 @@ Double-click `start_server.bat`, then open:
 http://127.0.0.1:8765
 ```
 
-The web UI lets you upload source videos and audio, create a horizontal, vertical, or square export, and watch render progress.
+The web UI lets you upload source videos and audio, set clip length with values like `2.00s`, create a horizontal, vertical, or square export, and watch render progress.
 
 ## Auto-Start On Windows
 

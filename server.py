@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,9 @@ JOBS_DIR = RUNTIME_DIR / "server_jobs"
 DOWNLOADS = RUNTIME_DIR / "downloads" if IS_VERCEL else Path.home() / "Downloads"
 ALLOWED_VIDEO = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 ALLOWED_AUDIO = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+DEFAULT_CLIP_SECONDS = 2.0
+MIN_CLIP_SECONDS = 0.25
+MAX_CLIP_SECONDS = 60.0
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024 * 1024
@@ -97,9 +101,25 @@ def save_uploads(files, target_dir: Path, allowed: set[str], fallback_prefix: st
     return saved
 
 
+def parse_clip_seconds(value: object) -> float:
+    text = str(value or "").strip().lower()
+    if not text:
+        return DEFAULT_CLIP_SECONDS
+
+    match = re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)\s*(?:s|sec|secs|second|seconds)?", text)
+    if not match:
+        raise ValueError("Clip length must look like 2, 2.00, 2s, or 2.00s.")
+
+    seconds = float(match.group(1))
+    if seconds < MIN_CLIP_SECONDS or seconds > MAX_CLIP_SECONDS:
+        raise ValueError(f"Clip length must be between {MIN_CLIP_SECONDS:g}s and {MAX_CLIP_SECONDS:g}s.")
+    return seconds
+
+
 def run_job(job_id: str, video_dir: Path, audio_path: Path | None, args: dict[str, object]) -> None:
     set_job(job_id, status="running")
-    add_log(job_id, "Starting exact 2.000 second clip shuffle...")
+    clip_seconds = float(args.get("clip_seconds", DEFAULT_CLIP_SECONDS))
+    add_log(job_id, f"Starting exact {clip_seconds:.3f} second clip shuffle...")
 
     orientation = str(args.get("orientation", "horizontal"))
     if orientation == "vertical":
@@ -117,7 +137,7 @@ def run_job(job_id: str, video_dir: Path, audio_path: Path | None, args: dict[st
         "--input-dir",
         str(video_dir),
         "--clip-seconds",
-        "2.0",
+        f"{clip_seconds:.6f}",
         "--width",
         width,
         "--height",
@@ -353,7 +373,7 @@ HTML = r"""
   <main>
     <section class="setup">
       <h1>Nneka</h1>
-      <p class="sub">Use footage you own or are licensed to reuse. Every shot is cut to exactly 2.000 seconds.</p>
+      <p class="sub">Use footage you own or are licensed to reuse.</p>
       <form id="jobForm">
         <label>
           Source videos
@@ -363,10 +383,10 @@ HTML = r"""
           Your audio
           <input name="audio" type="file" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,audio/*">
         </label>
-        <div class="fixed">
-          <span>Clip length</span>
-          <strong>2.000s</strong>
-        </div>
+        <label>
+          Clip length
+          <input name="clip_seconds" id="clipSeconds" type="text" inputmode="decimal" value="2.00s" placeholder="2.00s">
+        </label>
         <div class="row">
           <label>
             Format
@@ -414,6 +434,7 @@ HTML = r"""
     const audioName = document.getElementById("audioName");
     const exportName = document.getElementById("exportName");
     const downloadLink = document.getElementById("downloadLink");
+    const clipSeconds = document.getElementById("clipSeconds");
 
     function updateCounts() {
       videoCount.textContent = form.videos.files.length;
@@ -449,6 +470,12 @@ HTML = r"""
         formError.textContent = "Choose at least one source video.";
         return;
       }
+      const parsedClipSeconds = parseClipSeconds(clipSeconds.value);
+      if (!parsedClipSeconds) {
+        formError.textContent = "Clip length must look like 2, 2.00, 2s, or 2.00s.";
+        return;
+      }
+      clipSeconds.value = `${parsedClipSeconds.toFixed(2)}s`;
       button.disabled = true;
       button.textContent = "Uploading...";
       statusText.textContent = "uploading";
@@ -467,6 +494,14 @@ HTML = r"""
         button.textContent = "Create Video";
       }
     });
+
+    function parseClipSeconds(value) {
+      const match = String(value || "").trim().toLowerCase().match(/^(\d+(?:\.\d+)?|\.\d+)\s*(?:s|sec|secs|second|seconds)?$/);
+      if (!match) return null;
+      const seconds = Number(match[1]);
+      if (!Number.isFinite(seconds) || seconds < 0.25 || seconds > 60) return null;
+      return seconds;
+    }
   </script>
 </body>
 </html>
@@ -480,6 +515,11 @@ def index():
 
 @app.post("/api/run")
 def api_run():
+    try:
+        clip_seconds = parse_clip_seconds(request.form.get("clip_seconds", DEFAULT_CLIP_SECONDS))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     job_id = uuid.uuid4().hex
     job_dir = JOBS_DIR / job_id
     video_dir = job_dir / "videos"
@@ -500,6 +540,7 @@ def api_run():
         "orientation": request.form.get("orientation", "horizontal"),
         "fps": request.form.get("fps", "30"),
         "seed": request.form.get("seed", ""),
+        "clip_seconds": clip_seconds,
     }
     if IS_VERCEL:
         run_job(job_id, video_dir, audio_files[0] if audio_files else None, args)
